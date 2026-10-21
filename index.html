@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fahrzeug Status Update</title>
+<style>
+:root{--bg:#fff;--fg:#1f2329;--muted:#646a73;--line:#dee0e3;--card:#f5f6f7;--accent:#3370ff;--ok:#2ea121;--err:#d83931;--warn:#de7802}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1b1b1b;--fg:#ebebeb;--muted:#a6a6a6;--line:#373737;--card:#242424;--accent:#4c88ff}}
+:root[data-theme="dark"]{--bg:#1b1b1b;--fg:#ebebeb;--muted:#a6a6a6;--line:#373737;--card:#242424;--accent:#4c88ff}
+*{box-sizing:border-box}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+h1{font-size:16px;margin:0 0 2px}
+.sub{color:var(--muted);margin:0 0 14px}
+.step{border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:12px}
+.step h2{font-size:13px;margin:0 0 8px;display:flex;gap:8px;align-items:center}
+.n{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px}
+label{display:block;color:var(--muted);font-size:12px;margin:8px 0 3px}
+select,input[type=text]{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+#drop{display:block;border:1.5px dashed var(--line);border-radius:8px;padding:18px;text-align:center;cursor:pointer;color:var(--muted)}
+#drop.over{border-color:var(--accent);color:var(--accent)}
+#drop strong{color:var(--accent)}
+#file{display:none}
+#fileInfo{margin-top:6px;font-size:12px;color:var(--muted)}
+.chk{display:flex;gap:6px;align-items:center;margin-top:10px;color:var(--fg);font-size:12px}
+.kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
+.kpi{background:var(--card);border-radius:6px;padding:8px}
+.kpi b{display:block;font-size:18px}
+.kpi span{color:var(--muted);font-size:11px}
+.kpi.ch b{color:var(--accent)}
+#sVia{color:var(--muted);font-size:11px;margin:6px 0}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500}
+td.old{color:var(--muted)}
+.scroll{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:6px}
+details{margin-top:8px}
+summary{cursor:pointer;color:var(--muted);font-size:12px}
+pre,.list{white-space:pre-wrap;font-size:11px;color:var(--muted);margin:6px 0 0;max-height:140px;overflow:auto}
+button{width:100%;padding:9px;border:0;border-radius:6px;background:var(--accent);color:#fff;font:600 13px/1 inherit;cursor:pointer}
+button:disabled{opacity:.45;cursor:not-allowed}
+.status{margin-top:10px;font-size:12px;color:var(--muted)}
+.status.ok{color:var(--ok)}.status.err{color:var(--err)}
+.warn{background:color-mix(in srgb,var(--warn) 12%,transparent);color:var(--fg);border-radius:6px;padding:10px;margin-bottom:12px;font-size:12px}
+.foot{color:var(--muted);font-size:11px;margin-top:10px}
+</style>
+</head>
+<body>
+<h1>Fahrzeug Status Update</h1>
+<p class="sub">BGPC Vehicle Archives hochladen. Das Feld „Fahrzeug Status“ wird aus der Datei befüllt. Es wird nichts gelöscht und kein anderes Feld verändert.</p>
+
+<div id="notInLark" class="warn" hidden>Diese Seite muss als Erweiterung innerhalb von Lark Base geöffnet werden, sonst hat sie keinen Zugriff auf die Tabelle.</div>
+
+<div class="step">
+  <h2><span class="n">1</span>Ziel in Lark</h2>
+  <label for="tableSel">Tabelle</label>
+  <select id="tableSel"><option>Wird geladen …</option></select>
+  <label for="fTarget">Zielfeld</label>
+  <select id="fTarget"></select>
+  <details>
+    <summary>Abgleich-Schlüssel (Reihenfolge: Fahrzeugcode → VIN → ZPSO)</summary>
+    <div class="row">
+      <div><label for="fCode">Fahrzeugcode-Feld</label><select id="fCode"></select></div>
+      <div><label for="fVin">VIN-Feld</label><select id="fVin"></select></div>
+    </div>
+    <label for="fZpso">ZPSO-Feld</label><select id="fZpso"></select>
+  </details>
+</div>
+
+<div class="step">
+  <h2><span class="n">2</span>Vehicle-Archives-Datei</h2>
+  <label id="drop" for="file"><strong>Excel auswählen</strong> oder hierher ziehen<br><small>.xlsx · Export „Vehicle archives“ aus BGPC</small></label>
+  <input id="file" type="file" accept=".xlsx,.xls">
+  <div id="fileInfo"></div>
+  <div class="row">
+    <div><label for="srcCol">Status-Spalte in der Datei</label><input id="srcCol" type="text" value="C" maxlength="3"></div>
+    <div></div>
+  </div>
+  <label class="chk"><input id="onlyEmpty" type="checkbox"> Nur leere Felder befüllen (vorhandene Werte nicht überschreiben)</label>
+</div>
+
+<div class="step" id="summary" hidden>
+  <h2><span class="n">3</span>Vorschau</h2>
+  <div class="kpis">
+    <div class="kpi ch"><b id="sChange">0</b><span>werden geändert</span></div>
+    <div class="kpi"><b id="sSame">0</b><span>bereits aktuell</span></div>
+    <div class="kpi"><b id="sMissing">0</b><span>nicht in Datei gefunden</span></div>
+    <div class="kpi"><b id="sConflict">0</b><span>Konflikte (übersprungen)</span></div>
+  </div>
+  <div id="sVia"></div>
+  <div class="scroll"><table><thead><tr><th>Datensatz</th><th>Bisher</th><th>Neu</th></tr></thead><tbody id="changes"></tbody></table></div>
+  <details><summary>Nicht gefunden</summary><div class="list" id="missingList"></div></details>
+  <details><summary>Konflikte</summary><pre id="conflictList"></pre></details>
+  <p class="foot">Lark-Datensätze gesamt: <span id="sTotal">0</span></p>
+</div>
+
+<button id="btnSync" disabled>Fahrzeug Status aktualisieren</button>
+<div id="status" class="status">Verbinde mit Lark Base …</div>
+<p class="foot">Die Datei wird nur lokal im Browser gelesen und nicht hochgeladen.</p>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script type="module">
+import { bitable } from 'https://cdn.jsdelivr.net/npm/@lark-base-open/js-sdk@1.0.2/+esm';
+const XLSX = window.XLSX;
+
+const $ = (id) => document.getElementById(id);
+const norm = (v) => String(v ?? '').trim().toUpperCase();
+const cellText = (v) => {
+  if (v == null) return '';
+  if (Array.isArray(v)) return v.map((s) => (s && typeof s === 'object' ? s.text ?? s.name ?? '' : String(s))).join('').trim();
+  if (typeof v === 'object') return String(v.text ?? v.name ?? '').trim();
+  return String(v).trim();
+};
+
+const state = { table: null, fields: [], fileRows: null, plan: null };
+const KEY_DEFAULTS = { code: 'Fahrzeugcode', vin: 'VIN', zpso: 'Bestellnummer ( ZSPO)', target: 'Fahrzeug Status' };
+
+function log(msg, kind = '') {
+  const el = $('status');
+  el.className = 'status ' + kind;
+  el.textContent = msg;
+}
+
+async function init() {
+  const inLark = window.parent !== window;
+  if (!inLark) {
+    $('notInLark').hidden = false;
+  }
+  try {
+    const tables = await withTimeout(bitable.base.getTableMetaList(), 8000);
+    const active = await bitable.base.getActiveTable();
+    const activeId = active.id;
+    const sel = $('tableSel');
+    sel.innerHTML = '';
+    for (const t of tables) {
+      const o = document.createElement('option');
+      o.value = t.id; o.textContent = t.name;
+      if (t.id === activeId) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.onchange = () => loadTable(sel.value);
+    await loadTable(activeId);
+    $('notInLark').hidden = true;
+  } catch (e) {
+    $('notInLark').hidden = false;
+    log('Keine Verbindung zu Lark Base. Bitte die Erweiterung innerhalb von Lark Base öffnen.', 'err');
+  }
+}
+
+function withTimeout(p, ms) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+}
+
+async function loadTable(id) {
+  state.table = await bitable.base.getTableById(id);
+  state.fields = await state.table.getFieldMetaList();
+  const fill = (selId, def, allowNone) => {
+    const s = $(selId);
+    s.innerHTML = allowNone ? '<option value="">(nicht verwenden)</option>' : '';
+    for (const f of state.fields) {
+      const o = document.createElement('option');
+      o.value = f.id; o.textContent = f.name;
+      if (f.name === def) o.selected = true;
+      s.appendChild(o);
+    }
+  };
+  fill('fCode', KEY_DEFAULTS.code, true);
+  fill('fVin', KEY_DEFAULTS.vin, true);
+  fill('fZpso', KEY_DEFAULTS.zpso, true);
+  fill('fTarget', KEY_DEFAULTS.target, false);
+  state.plan = null;
+  renderPlan();
+  log('Tabelle geladen. Excel-Datei auswählen.');
+}
+
+// ---------- Excel ----------
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const wb = XLSX.read(new Uint8Array(r.result), { type: 'array', cellDates: true });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        resolve(XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' }));
+      } catch (e) { reject(e); }
+    };
+    r.onerror = reject;
+    r.readAsArrayBuffer(file);
+  });
+}
+
+function findCol(header, names, fallback) {
+  const h = header.map((x) => norm(x).replace(/\s+/g, ' '));
+  for (const n of names) {
+    const i = h.indexOf(norm(n));
+    if (i >= 0) return i;
+  }
+  return fallback;
+}
+
+async function onFile(file) {
+  if (!file) return;
+  log('Datei wird gelesen …');
+  try {
+    const rows = await readFile(file);
+    if (!rows.length) throw new Error('Datei ist leer');
+    const header = rows[0];
+    const statusLetter = $('srcCol').value.trim().toUpperCase() || 'C';
+    const cStatus = XLSX.utils.decode_col(statusLetter);
+    const cCode = findCol(header, ['Vehicle code'], 0);
+    const cVin = findCol(header, ['Vin'], 1);
+    const cSo = findCol(header, ['SO No.'], -1);
+    const data = rows.slice(1).filter((r) => r.some((x) => String(x).trim() !== ''));
+    state.fileRows = data.map((r) => ({
+      code: norm(r[cCode]),
+      vin: norm(r[cVin]),
+      so: cSo >= 0 ? norm(r[cSo]) : '',
+      status: String(r[cStatus] ?? '').trim(),
+    }));
+    $('fileInfo').textContent = `${file.name} · ${state.fileRows.length} Zeilen · Status aus Spalte ${statusLetter} („${header[cStatus] ?? ''}“)`;
+    await buildPlan();
+  } catch (e) {
+    log('Datei konnte nicht gelesen werden: ' + e.message, 'err');
+  }
+}
+
+// ---------- Abgleich ----------
+function indexBy(rows, key) {
+  const m = new Map();
+  for (const r of rows) {
+    const k = r[key];
+    if (!k || k === 'HISTORICAL SO') continue;
+    if (!m.has(k)) m.set(k, new Set());
+    m.get(k).add(r.status);
+  }
+  return m;
+}
+
+async function getAllRecords() {
+  const out = [];
+  let pageToken;
+  do {
+    const res = await state.table.getRecordsByPage({ pageSize: 200, pageToken });
+    out.push(...res.records);
+    pageToken = res.hasMore ? res.pageToken : undefined;
+  } while (pageToken);
+  return out;
+}
+
+async function buildPlan() {
+  if (!state.table || !state.fileRows) return;
+  log('Lark-Datensätze werden geladen und abgeglichen …');
+  const fCode = $('fCode').value, fVin = $('fVin').value, fZpso = $('fZpso').value, fTarget = $('fTarget').value;
+  const onlyEmpty = $('onlyEmpty').checked;
+  const skipEmptySrc = true;
+  const byCode = indexBy(state.fileRows, 'code');
+  const byVin = indexBy(state.fileRows, 'vin');
+  const bySo = indexBy(state.fileRows, 'so');
+
+  const records = await getAllRecords();
+  const plan = { changes: [], same: 0, notFound: [], conflicts: [], skippedFilled: 0, total: records.length, via: { code: 0, vin: 0, so: 0 } };
+
+  for (const rec of records) {
+    const f = rec.fields;
+    const code = fCode ? norm(cellText(f[fCode])) : '';
+    const vin = fVin ? norm(cellText(f[fVin])) : '';
+    const so = fZpso ? norm(cellText(f[fZpso])) : '';
+    let hit = null, via = null;
+    if (code && byCode.has(code)) { hit = byCode.get(code); via = 'code'; }
+    else if (vin && byVin.has(vin)) { hit = byVin.get(vin); via = 'vin'; }
+    else if (so && bySo.has(so)) { hit = bySo.get(so); via = 'so'; }
+    const label = so || code || vin || rec.recordId;
+    if (!hit) { plan.notFound.push(label); continue; }
+    const vals = [...hit].filter((x) => x !== '');
+    if (vals.length > 1) { plan.conflicts.push(`${label}: ${vals.join(' / ')}`); continue; }
+    const newVal = vals[0] ?? '';
+    if (skipEmptySrc && newVal === '') { plan.same++; continue; }
+    const oldVal = cellText(f[fTarget]);
+    if (oldVal === newVal) { plan.same++; continue; }
+    if (onlyEmpty && oldVal !== '') { plan.skippedFilled++; continue; }
+    plan.via[via]++;
+    plan.changes.push({ recordId: rec.recordId, label, oldVal, newVal });
+  }
+  state.plan = plan;
+  renderPlan();
+  log(plan.changes.length ? `${plan.changes.length} Änderungen bereit. Prüfen und dann „Fahrzeug Status aktualisieren“ klicken.` : 'Keine Änderungen nötig.', plan.changes.length ? '' : 'ok');
+}
+
+function renderPlan() {
+  const p = state.plan;
+  $('btnSync').disabled = !p || !p.changes.length;
+  if (!p) { $('summary').hidden = true; return; }
+  $('summary').hidden = false;
+  $('sTotal').textContent = p.total;
+  $('sChange').textContent = p.changes.length;
+  $('sSame').textContent = p.same;
+  $('sMissing').textContent = p.notFound.length;
+  $('sConflict').textContent = p.conflicts.length + (p.skippedFilled ? ` · ${p.skippedFilled} übersprungen (gefüllt)` : '');
+  $('sVia').textContent = `Treffer über Fahrzeugcode ${p.via.code}, VIN ${p.via.vin}, ZPSO ${p.via.so}`;
+  const tb = $('changes');
+  tb.innerHTML = '';
+  for (const c of p.changes.slice(0, 500)) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td></td><td class="old"></td><td class="new"></td>`;
+    tr.children[0].textContent = c.label;
+    tr.children[1].textContent = c.oldVal || '–';
+    tr.children[2].textContent = c.newVal;
+    tb.appendChild(tr);
+  }
+  $('missingList').textContent = p.notFound.join(', ') || '–';
+  $('conflictList').textContent = p.conflicts.join('\n') || '–';
+}
+
+async function sync() {
+  const p = state.plan;
+  if (!p || !p.changes.length) return;
+  const fTarget = $('fTarget').value;
+  $('btnSync').disabled = true;
+  let done = 0;
+  try {
+    for (let i = 0; i < p.changes.length; i += 100) {
+      const batch = p.changes.slice(i, i + 100).map((c) => ({
+        recordId: c.recordId,
+        fields: { [fTarget]: [{ type: 'text', text: c.newVal }] },
+      }));
+      await state.table.setRecords(batch);
+      done += batch.length;
+      log(`Schreibe … ${done}/${p.changes.length}`);
+    }
+    log(`Fertig: ${done} Datensätze aktualisiert.`, 'ok');
+    state.plan = null;
+    await buildPlan();
+    log(`Fertig: ${done} Datensätze aktualisiert. Kontrolle: ${state.plan?.changes.length ?? 0} offene Abweichungen.`, 'ok');
+  } catch (e) {
+    log(`Abbruch nach ${done} Datensätzen: ${e.message}`, 'err');
+    $('btnSync').disabled = false;
+  }
+}
+
+$('file').addEventListener('change', (e) => onFile(e.target.files[0]));
+$('drop').addEventListener('dragover', (e) => { e.preventDefault(); $('drop').classList.add('over'); });
+$('drop').addEventListener('dragleave', () => $('drop').classList.remove('over'));
+$('drop').addEventListener('drop', (e) => { e.preventDefault(); $('drop').classList.remove('over'); onFile(e.dataTransfer.files[0]); });
+for (const id of ['fCode', 'fVin', 'fZpso', 'fTarget', 'onlyEmpty']) $(id).addEventListener('change', () => buildPlan());
+$('srcCol').addEventListener('change', () => { const f = $('file').files[0]; if (f) onFile(f); });
+$('btnSync').addEventListener('click', sync);
+init();
+
+</script>
+</body>
+</html>
