@@ -109,7 +109,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
   </div>
   <label class="chk"><input id="stockRemove" type="checkbox" checked> Fahrzeuge entfernen, die nicht mehr im Free Stock sind</label>
   <details><summary>Zu entfernende VINs</summary><div class="list" id="stockRemoveList"></div></details>
-  <details><summary>Übernommene Spalten (B, C, AA–AD)</summary><div class="list" id="stockFields"></div></details>
+  <details><summary>Übernommene Spalten (B, C, AA–AD, AU → Stock Age)</summary><div class="list" id="stockFields"></div></details>
   <button id="btnStock" disabled style="margin-top:10px">Free STOCK Car aktualisieren</button>
   <div id="stockStatus" class="status"></div>
 </div>
@@ -362,6 +362,21 @@ const STOCK_TABLE = 'Free STOCK Car';
 // Spalten laut Vorgabe: B (VIN), C (Logistikstatus), AA–AD (Modell, Trimline, Außen-, Innenfarbe)
 const STOCK_COLS = ['B', 'C', 'AA', 'AB', 'AC', 'AD'];
 const STOCK_FILTER_COL = 'G';
+const STOCK_DATE_COL = 'AU'; // Invoicing Date
+const DATE_FIELD = 'Invoicing Date';
+const AGE_FIELD = 'Stock Age';
+const FLAG_FIELD = 'Stock Age > 60';
+
+function parseDate(v) {
+  if (v instanceof Date && !isNaN(v)) return Date.UTC(v.getFullYear(), v.getMonth(), v.getDate(), 12);
+  const s = String(v ?? '').trim();
+  let m = s.match(/^(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{4})/);
+  if (m) return Date.UTC(+m[3], +m[2] - 1, +m[1], 12);
+  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return Date.UTC(+m[1], +m[2] - 1, +m[3], 12);
+  return null;
+}
+const sameDay = (a, b) => a == null && b == null || (a != null && b != null && Math.abs(Number(a) - Number(b)) < 86400000 && new Date(Number(a)).getUTCDate() === new Date(Number(b)).getUTCDate());
 const STOCK_OK_LOGISTICS = ['DELIVERY CONFIRMED', 'CUSTOMS CLEARANCE COMPLETED', 'CUSTOMS CLEARED'];
 
 function stockLog(msg, kind = '') {
@@ -393,6 +408,7 @@ function stockRowsFromFile() {
     const vin = norm(vals[0]);
     if (!vin) { noVin++; continue; }
     vals[0] = vin;
+    vals.date = parseDate(r[XLSX.utils.decode_col(STOCK_DATE_COL)]);
     byVin.set(vin, vals);
   }
   return { byVin, noVin };
@@ -432,10 +448,11 @@ async function buildStockPlan() {
         }
         seen.add(vin);
         const vals = byVin.get(vin);
+        const dateId = idByName.get(DATE_FIELD);
         const differs = names.some((n, i) => {
           const fid = idByName.get(n);
           return !fid || cellText(rec.fields[fid]) !== vals[i];
-        });
+        }) || !dateId || !sameDay(rec.fields[dateId] ?? null, vals.date);
         if (differs) plan.update.push({ recordId: rec.recordId, vin, vals });
         else plan.same++;
       }
@@ -486,6 +503,22 @@ async function ensureStockTable(names) {
   for (const n of names) {
     if (!idByName.has(n)) idByName.set(n, await table.addField({ name: n, type: 1 }));
   }
+  if (!idByName.has(DATE_FIELD)) {
+    idByName.set(DATE_FIELD, await table.addField({ name: DATE_FIELD, type: 5, property: { dateFormat: 'dd/MM/yyyy' } }));
+  }
+  const ref = `bitable::$table[${table.id}].$field[${idByName.get(DATE_FIELD)}]`;
+  if (!idByName.has(AGE_FIELD)) {
+    idByName.set(AGE_FIELD, await table.addField({
+      name: AGE_FIELD, type: 20,
+      property: { formula: `IF(ISBLANK(${ref}),"",DAYS(TODAY(),${ref}))` },
+    }));
+  }
+  if (!idByName.has(FLAG_FIELD)) {
+    idByName.set(FLAG_FIELD, await table.addField({
+      name: FLAG_FIELD, type: 20,
+      property: { formula: `IF(ISBLANK(${ref}),"",IF(DAYS(TODAY(),${ref})>60,"🔴 über 60 Tage","🟢"))` },
+    }));
+  }
   return { table, idByName };
 }
 
@@ -500,6 +533,7 @@ async function syncStock() {
     const toFields = (vals) => {
       const f = {};
       p.names.forEach((n, i) => { f[idByName.get(n)] = vals[i] ? [{ type: 'text', text: vals[i] }] : null; });
+      f[idByName.get(DATE_FIELD)] = vals.date ?? null;
       return f;
     };
     for (let i = 0; i < p.add.length; i += 100) {
