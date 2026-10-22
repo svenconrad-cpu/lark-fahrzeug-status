@@ -131,7 +131,12 @@ const cellText = (v) => {
 };
 
 const state = { table: null, fields: [], fileRows: null, plan: null };
-const KEY_DEFAULTS = { code: 'Fahrzeugcode', vin: 'VIN', zpso: 'Bestellnummer ( ZSPO)', target: 'Fahrzeug Status' };
+const KEY_DEFAULTS = {
+  code: ['Fahrzeugcode', 'Vehicle code'],
+  vin: ['VIN'],
+  zpso: ['Bestellnummer ( ZSPO)', 'SO'],
+  target: ['Fahrzeug Status', 'Vehicle Status'],
+};
 
 function log(msg, kind = '') {
   const el = $('status');
@@ -173,15 +178,17 @@ function withTimeout(p, ms) {
 async function loadTable(id) {
   state.table = await bitable.base.getTableById(id);
   state.fields = await state.table.getFieldMetaList();
-  const fill = (selId, def, allowNone) => {
+  const fill = (selId, defs, allowNone) => {
     const s = $(selId);
-    s.innerHTML = allowNone ? '<option value="">(nicht verwenden)</option>' : '';
+    s.innerHTML = allowNone ? '<option value="">(nicht verwenden)</option>' : '<option value="">– Zielfeld wählen –</option>';
+    const hit = defs.map((d) => state.fields.find((f) => f.name.trim() === d)).find(Boolean);
     for (const f of state.fields) {
       const o = document.createElement('option');
       o.value = f.id; o.textContent = f.name;
-      if (f.name === def) o.selected = true;
+      if (hit && f.id === hit.id) o.selected = true;
       s.appendChild(o);
     }
+    if (!hit) s.value = '';
   };
   fill('fCode', KEY_DEFAULTS.code, true);
   fill('fVin', KEY_DEFAULTS.vin, true);
@@ -271,6 +278,7 @@ async function getAllRecords() {
 
 async function buildPlan() {
   if (!state.table || !state.fileRows) return;
+  if (!$('fTarget').value) { state.plan = null; renderPlan(); log('Bitte zuerst ein Zielfeld wählen.', 'err'); return; }
   log('Lark-Datensätze werden geladen und abgeglichen …');
   const fCode = $('fCode').value, fVin = $('fVin').value, fZpso = $('fZpso').value, fTarget = $('fTarget').value;
   const onlyEmpty = $('onlyEmpty').checked;
