@@ -48,7 +48,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 </head>
 <body>
 <h1>Fahrzeug Status Update</h1>
-<p class="sub">BGPC Vehicle Archives hochladen. Das Feld „Fahrzeug Status“ wird aus der Datei befüllt. Es wird nichts gelöscht und kein anderes Feld verändert.</p>
+<p class="sub">BGPC Vehicle Archives hochladen. Das Feld „Fahrzeug Status“ wird aus der Datei befüllt (kein anderes Feld wird verändert). Zusätzlich wird die Tabelle „Free STOCK Car“ mit dem freien Lagerbestand abgeglichen.</p>
 
 <div id="notInLark" class="warn" hidden>Diese Seite muss als Erweiterung innerhalb von Lark Base geöffnet werden, sonst hat sie keinen Zugriff auf die Tabelle.</div>
 
@@ -97,6 +97,22 @@ button:disabled{opacity:.45;cursor:not-allowed}
 
 <button id="btnSync" disabled>Fahrzeug Status aktualisieren</button>
 <div id="status" class="status">Verbinde mit Lark Base …</div>
+
+<div class="step" id="stockBox" hidden style="margin-top:16px">
+  <h2><span class="n">4</span>Tabelle „Free STOCK Car“</h2>
+  <p class="foot" id="stockInfo" style="margin-top:0"></p>
+  <div class="kpis">
+    <div class="kpi ch"><b id="kAdd">0</b><span>neu eintragen</span></div>
+    <div class="kpi"><b id="kUpd">0</b><span>aktualisieren</span></div>
+    <div class="kpi"><b id="kDel">0</b><span>nicht mehr frei → entfernen</span></div>
+    <div class="kpi"><b id="kSame">0</b><span>unverändert</span></div>
+  </div>
+  <label class="chk"><input id="stockRemove" type="checkbox" checked> Fahrzeuge entfernen, die nicht mehr im Free Stock sind</label>
+  <details><summary>Zu entfernende VINs</summary><div class="list" id="stockRemoveList"></div></details>
+  <details><summary>Übernommene Spalten (B, C, AA–AD)</summary><div class="list" id="stockFields"></div></details>
+  <button id="btnStock" disabled style="margin-top:10px">Free STOCK Car aktualisieren</button>
+  <div id="stockStatus" class="status"></div>
+</div>
 <p class="foot">Die Datei wird nur lokal im Browser gelesen und nicht hochgeladen.</p>
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -219,7 +235,10 @@ async function onFile(file) {
       status: String(r[cStatus] ?? '').trim(),
     }));
     $('fileInfo').textContent = `${file.name} · ${state.fileRows.length} Zeilen · Status aus Spalte ${statusLetter} („${header[cStatus] ?? ''}“)`;
+    state.rawHeader = header;
+    state.rawData = data;
     await buildPlan();
+    await buildStockPlan();
   } catch (e) {
     log('Datei konnte nicht gelesen werden: ' + e.message, 'err');
   }
@@ -337,6 +356,175 @@ async function sync() {
     $('btnSync').disabled = false;
   }
 }
+
+// ---------- Free STOCK Car ----------
+const STOCK_TABLE = 'Free STOCK Car';
+// Spalten laut Vorgabe: B (VIN), C (Logistikstatus), AA–AD (Modell, Trimline, Außen-, Innenfarbe)
+const STOCK_COLS = ['B', 'C', 'AA', 'AB', 'AC', 'AD'];
+const STOCK_FILTER_COL = 'G';
+const STOCK_OK_LOGISTICS = ['DELIVERY CONFIRMED', 'CUSTOMS CLEARANCE COMPLETED', 'CUSTOMS CLEARED'];
+
+function stockLog(msg, kind = '') {
+  const el = $('stockStatus');
+  el.className = 'status ' + kind;
+  el.textContent = msg;
+}
+
+function stockFieldNames() {
+  const h = state.rawHeader || [];
+  return STOCK_COLS.map((l, i) => {
+    const name = String(h[XLSX.utils.decode_col(l)] ?? '').trim();
+    return i === 0 ? 'VIN' : name || `Spalte ${l}`;
+  });
+}
+
+function stockRowsFromFile() {
+  const iG = XLSX.utils.decode_col(STOCK_FILTER_COL);
+  const iC = XLSX.utils.decode_col('C');
+  const idx = STOCK_COLS.map((l) => XLSX.utils.decode_col(l));
+  const byVin = new Map();
+  let noVin = 0;
+  for (const r of state.rawData || []) {
+    const g = norm(r[iG]);
+    const c = norm(r[iC]);
+    if (!g.startsWith('DEALER FREE STOCK')) continue;
+    if (!STOCK_OK_LOGISTICS.includes(c)) continue;
+    const vals = idx.map((i) => String(r[i] ?? '').trim());
+    const vin = norm(vals[0]);
+    if (!vin) { noVin++; continue; }
+    vals[0] = vin;
+    byVin.set(vin, vals);
+  }
+  return { byVin, noVin };
+}
+
+async function findStockTable() {
+  const metas = await bitable.base.getTableMetaList();
+  const m = metas.find((t) => t.name.trim().toLowerCase() === STOCK_TABLE.toLowerCase());
+  return m ? bitable.base.getTableById(m.id) : null;
+}
+
+async function buildStockPlan() {
+  if (!state.rawData) return;
+  const names = stockFieldNames();
+  const { byVin, noVin } = stockRowsFromFile();
+  const plan = { names, add: [], update: [], remove: [], same: 0, noVin, total: byVin.size, tableExists: false };
+  try {
+    const table = await findStockTable();
+    if (table) {
+      plan.tableExists = true;
+      const metas = await table.getFieldMetaList();
+      const idByName = new Map(metas.map((f) => [f.name.trim(), f.id]));
+      const recs = [];
+      let pageToken;
+      do {
+        const res = await table.getRecordsByPage({ pageSize: 200, pageToken });
+        recs.push(...res.records);
+        pageToken = res.hasMore ? res.pageToken : undefined;
+      } while (pageToken);
+      const vinId = idByName.get('VIN');
+      const seen = new Set();
+      for (const rec of recs) {
+        const vin = vinId ? norm(cellText(rec.fields[vinId])) : '';
+        if (!vin || !byVin.has(vin) || seen.has(vin)) {
+          plan.remove.push({ recordId: rec.recordId, vin: vin || '(leer)' });
+          continue;
+        }
+        seen.add(vin);
+        const vals = byVin.get(vin);
+        const differs = names.some((n, i) => {
+          const fid = idByName.get(n);
+          return !fid || cellText(rec.fields[fid]) !== vals[i];
+        });
+        if (differs) plan.update.push({ recordId: rec.recordId, vin, vals });
+        else plan.same++;
+      }
+      for (const [vin, vals] of byVin) if (!seen.has(vin)) plan.add.push({ vin, vals });
+    } else {
+      for (const [vin, vals] of byVin) plan.add.push({ vin, vals });
+    }
+  } catch (e) {
+    stockLog('Free-Stock-Abgleich fehlgeschlagen: ' + e.message, 'err');
+    return;
+  }
+  state.stockPlan = plan;
+  renderStockPlan();
+}
+
+function renderStockPlan() {
+  const p = state.stockPlan;
+  $('stockBox').hidden = !p;
+  if (!p) return;
+  const doRemove = $('stockRemove').checked;
+  $('kAdd').textContent = p.add.length;
+  $('kUpd').textContent = p.update.length;
+  $('kDel').textContent = doRemove ? p.remove.length : 0;
+  $('kSame').textContent = p.same;
+  $('stockInfo').textContent =
+    `${p.total} Fahrzeuge in der Datei erfüllen den Filter (G = Dealer Free Stock, C = Delivery Confirmed oder Customs Clearance Completed).` +
+    (p.tableExists ? '' : ` Die Tabelle „${STOCK_TABLE}“ wird neu angelegt.`) +
+    (p.noVin ? ` ${p.noVin} Treffer ohne VIN werden übersprungen.` : '');
+  $('stockFields').textContent = p.names.join(' · ');
+  $('stockRemoveList').textContent = p.remove.map((r) => r.vin).join(', ') || '–';
+  const n = p.add.length + p.update.length + (doRemove ? p.remove.length : 0);
+  $('btnStock').disabled = n === 0 && p.tableExists;
+  if (!n && p.tableExists) stockLog('Tabelle ist bereits aktuell.', 'ok');
+  else stockLog(`${n} Änderungen bereit.`);
+}
+
+async function ensureStockTable(names) {
+  let table = await findStockTable();
+  if (!table) {
+    const res = await bitable.base.addTable({
+      name: STOCK_TABLE,
+      fields: names.map((n) => ({ name: n, type: 1 })),
+    });
+    table = await bitable.base.getTableById(res.tableId);
+  }
+  const metas = await table.getFieldMetaList();
+  const idByName = new Map(metas.map((f) => [f.name.trim(), f.id]));
+  for (const n of names) {
+    if (!idByName.has(n)) idByName.set(n, await table.addField({ name: n, type: 1 }));
+  }
+  return { table, idByName };
+}
+
+async function syncStock() {
+  const p = state.stockPlan;
+  if (!p) return;
+  $('btnStock').disabled = true;
+  const doRemove = $('stockRemove').checked;
+  try {
+    stockLog('Tabelle wird vorbereitet …');
+    const { table, idByName } = await ensureStockTable(p.names);
+    const toFields = (vals) => {
+      const f = {};
+      p.names.forEach((n, i) => { f[idByName.get(n)] = vals[i] ? [{ type: 'text', text: vals[i] }] : null; });
+      return f;
+    };
+    for (let i = 0; i < p.add.length; i += 100) {
+      await table.addRecords(p.add.slice(i, i + 100).map((a) => ({ fields: toFields(a.vals) })));
+      stockLog(`Neu angelegt … ${Math.min(i + 100, p.add.length)}/${p.add.length}`);
+    }
+    for (let i = 0; i < p.update.length; i += 100) {
+      await table.setRecords(p.update.slice(i, i + 100).map((u) => ({ recordId: u.recordId, fields: toFields(u.vals) })));
+    }
+    if (doRemove && p.remove.length) {
+      for (let i = 0; i < p.remove.length; i += 100) {
+        await table.deleteRecords(p.remove.slice(i, i + 100).map((r) => r.recordId));
+      }
+    }
+    const msg = `Fertig: ${p.add.length} neu, ${p.update.length} aktualisiert, ${doRemove ? p.remove.length : 0} entfernt.`;
+    await buildStockPlan();
+    stockLog(msg, 'ok');
+  } catch (e) {
+    stockLog('Abbruch: ' + e.message, 'err');
+    $('btnStock').disabled = false;
+  }
+}
+
+$('btnStock').addEventListener('click', syncStock);
+$('stockRemove').addEventListener('change', renderStockPlan);
 
 $('file').addEventListener('change', (e) => onFile(e.target.files[0]));
 $('drop').addEventListener('dragover', (e) => { e.preventDefault(); $('drop').classList.add('over'); });
