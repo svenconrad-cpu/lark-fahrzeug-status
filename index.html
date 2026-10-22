@@ -113,6 +113,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
   <button id="btnStock" disabled style="margin-top:10px">Free STOCK Car aktualisieren</button>
   <div id="stockStatus" class="status"></div>
 </div>
+<div id="personStatus" class="status"></div>
 <p class="foot">Die Datei wird nur lokal im Browser gelesen und nicht hochgeladen.</p>
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -158,6 +159,7 @@ async function init() {
     sel.onchange = () => loadTable(sel.value);
     await loadTable(activeId);
     $('notInLark').hidden = true;
+    syncPersons();
   } catch (e) {
     $('notInLark').hidden = false;
     log('Keine Verbindung zu Lark Base. Bitte die Erweiterung innerhalb von Lark Base öffnen.', 'err');
@@ -554,6 +556,71 @@ async function syncStock() {
   } catch (e) {
     stockLog('Abbruch: ' + e.message, 'err');
     $('btnStock').disabled = false;
+  }
+}
+
+// ---------- Verkäufer-Zuordnung (Personenfeld in BGPC DATA 2.0) ----------
+const SALES_TABLE = 'BGPC DATA 2.0';
+const ACCOUNT_FIELD = 'Sales Consultant Account';
+const PERSON_FIELD = 'Sales Consultant (Lark)';
+// Sammelkonten → Konto, dessen Person übernommen wird
+const ACCOUNT_ALIAS = {
+  'SALES.DIRECTOR': 'TIMUCIN.LEYLA',
+  'SALES.ASSISTANT': 'TIMUCIN.LEYLA',
+  'STORE.DIRECTER.RASUL': 'TIMUCIN.LEYLA',
+};
+
+function personLog(msg, kind = '') {
+  const el = $('personStatus');
+  if (!el) return;
+  el.className = 'status ' + kind;
+  el.textContent = msg;
+}
+
+async function syncPersons() {
+  try {
+    const metas = await bitable.base.getTableMetaList();
+    const tm = metas.find((t) => t.name.trim() === SALES_TABLE);
+    if (!tm) { personLog(`Tabelle „${SALES_TABLE}“ nicht gefunden.`); return; }
+    const table = await bitable.base.getTableById(tm.id);
+    const fields = await table.getFieldMetaList();
+    const acc = fields.find((f) => f.name.trim() === ACCOUNT_FIELD);
+    if (!acc) { personLog(`Feld „${ACCOUNT_FIELD}“ fehlt.`); return; }
+    let per = fields.find((f) => f.name.trim() === PERSON_FIELD);
+    if (!per) {
+      const id = await table.addField({ name: PERSON_FIELD, type: 11, property: { multiple: false } });
+      per = { id };
+    }
+    const recs = [];
+    let pageToken;
+    do {
+      const res = await table.getRecordsByPage({ pageSize: 200, pageToken });
+      recs.push(...res.records);
+      pageToken = res.hasMore ? res.pageToken : undefined;
+    } while (pageToken);
+    const userId = (v) => (Array.isArray(v) && v[0] && v[0].id) || '';
+    // Zuordnung aus bereits gepflegten Datensätzen lernen
+    const map = new Map();
+    for (const r of recs) {
+      const a = norm(cellText(r.fields[acc.id]));
+      const u = r.fields[per.id];
+      if (a && userId(u) && !map.has(a)) map.set(a, u);
+    }
+    for (const [alias, target] of Object.entries(ACCOUNT_ALIAS)) if (!map.has(alias) && map.has(target)) map.set(alias, map.get(target));
+    const updates = [];
+    const unknown = new Map();
+    for (const r of recs) {
+      const a = norm(cellText(r.fields[acc.id]));
+      if (!a) continue;
+      const want = map.get(a);
+      if (!want) { unknown.set(a, (unknown.get(a) || 0) + 1); continue; }
+      if (userId(r.fields[per.id]) !== userId(want)) updates.push({ recordId: r.recordId, fields: { [per.id]: want } });
+    }
+    for (let i = 0; i < updates.length; i += 100) await table.setRecords(updates.slice(i, i + 100));
+    const miss = [...unknown.entries()].map(([a, n]) => `${a} (${n})`).join(', ');
+    personLog(`Verkäufer-Zuordnung: ${updates.length} Datensätze ergänzt.` + (miss ? ` Ohne Zuordnung: ${miss}. Bitte bei je einem Datensatz „${PERSON_FIELD}“ von Hand setzen.` : ' Alle Konten zugeordnet.'), miss ? '' : 'ok');
+  } catch (e) {
+    personLog('Verkäufer-Zuordnung fehlgeschlagen: ' + e.message, 'err');
   }
 }
 
