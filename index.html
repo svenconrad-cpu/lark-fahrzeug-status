@@ -571,6 +571,7 @@ async function syncStock() {
 const SALES_TABLE = 'BGPC DATA 2.0';
 const ACCOUNT_FIELD = 'Sales Consultant Account';
 const PERSON_FIELD = 'Sales Consultant (Lark)';
+const FALLBACK_PERSON = 'Timucin Leyla';
 // Sammelkonten → Konto, dessen Person übernommen wird
 const ACCOUNT_ALIAS = {
   'SALES.DIRECTOR': 'TIMUCIN.LEYLA',
@@ -615,18 +616,27 @@ async function syncPersons() {
       if (a && userId(u) && !map.has(a)) map.set(a, u);
     }
     for (const [alias, target] of Object.entries(ACCOUNT_ALIAS)) if (!map.has(alias) && map.has(target)) map.set(alias, map.get(target));
+    // Fallback: Konten ohne eigene Zuordnung gehen an FALLBACK_PERSON
+    let fallback = null;
+    for (const r of recs) {
+      const u = r.fields[per.id];
+      if (Array.isArray(u) && u[0] && [u[0].name, u[0].enName, u[0].en_name].some((n) => norm(n) === norm(FALLBACK_PERSON))) { fallback = u; break; }
+    }
     const updates = [];
     const unknown = new Map();
+    const fallbackUsed = new Map();
     for (const r of recs) {
       const a = norm(cellText(r.fields[acc.id]));
       if (!a) continue;
-      const want = map.get(a);
+      let want = map.get(a);
+      if (!want && fallback) { want = fallback; fallbackUsed.set(a, (fallbackUsed.get(a) || 0) + 1); }
       if (!want) { unknown.set(a, (unknown.get(a) || 0) + 1); continue; }
       if (userId(r.fields[per.id]) !== userId(want)) updates.push({ recordId: r.recordId, fields: { [per.id]: want } });
     }
     for (let i = 0; i < updates.length; i += 100) await table.setRecords(updates.slice(i, i + 100));
     const miss = [...unknown.entries()].map(([a, n]) => `${a} (${n})`).join(', ');
-    personLog(`Verkäufer-Zuordnung: ${updates.length} Datensätze ergänzt.` + (miss ? ` Ohne Zuordnung: ${miss}. Bitte bei je einem Datensatz „${PERSON_FIELD}“ von Hand setzen.` : ' Alle Konten zugeordnet.'), miss ? '' : 'ok');
+    const fb = [...fallbackUsed.keys()].join(', ');
+    personLog(`Verkäufer-Zuordnung: ${updates.length} Datensätze ergänzt.` + (fb ? ` An ${FALLBACK_PERSON} (keine eigene Zuordnung): ${fb}.` : '') + (miss ?` Ohne Zuordnung: ${miss}. Bitte bei je einem Datensatz „${PERSON_FIELD}“ von Hand setzen.` : ' Alle Konten zugeordnet.'), miss ? '' : 'ok');
   } catch (e) {
     personLog('Verkäufer-Zuordnung fehlgeschlagen: ' + e.message, 'err');
   }
