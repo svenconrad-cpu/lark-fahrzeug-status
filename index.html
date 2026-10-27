@@ -113,6 +113,19 @@ button:disabled{opacity:.45;cursor:not-allowed}
   <button id="btnStock" disabled style="margin-top:10px">Free STOCK Car aktualisieren</button>
   <div id="stockStatus" class="status"></div>
 </div>
+<div class="step" id="kpiBox" hidden style="margin-top:16px">
+  <h2><span class="n">5</span>Fahrzeug-KPIs (Dashboard)</h2>
+  <div class="kpis">
+    <div class="kpi ch"><b id="kKPI1">0</b><span>KPI1 fakturiert, nicht übergeben</span></div>
+    <div class="kpi"><b id="kKPI2">0</b><span>KPI2 davon nicht reported</span></div>
+    <div class="kpi"><b id="kKPI3">0</b><span>KPI3 nicht reported, Proof signed</span></div>
+    <div class="kpi"><b id="kKPI4">0</b><span>KPI4 nicht reported, Proof not uploaded</span></div>
+    <div class="kpi"><b id="kKPI5">0</b><span>KPI5 Dealer Free Stock</span></div>
+    <div class="kpi"><b id="kKPI6">0</b><span>KPI6 Free Stock &gt; 60 Tage</span></div>
+  </div>
+  <button id="btnKpi" disabled style="margin-top:10px">KPIs ins Dashboard schreiben</button>
+  <div id="kpiStatus" class="status"></div>
+</div>
 <div id="personStatus" class="status"></div>
 <p class="foot">Die Datei wird nur lokal im Browser gelesen und nicht hochgeladen.</p>
 
@@ -248,6 +261,7 @@ async function onFile(file) {
     state.rawData = data;
     await buildPlan();
     await buildStockPlan();
+    await buildKpis();
   } catch (e) {
     log('Datei konnte nicht gelesen werden: ' + e.message, 'err');
   }
@@ -642,6 +656,192 @@ async function syncPersons() {
   }
 }
 
+// ---------- Fahrzeug-KPIs (Dashboard-Daten) ----------
+const KPI_TABLE = 'Fahrzeug KPI';
+const KPI_HIST_TABLE = 'Fahrzeug KPI Verlauf';
+const KPI_COLS = { vin: 'B', code: 'A', logistics: 'C', sales: 'G', model: 'AA', invoice: 'AU', proof: 'AZ' };
+const KPI_NAMES = {
+  KPI1: 'KPI1 Fakturiert, nicht übergeben',
+  KPI2: 'KPI2 Nicht reported',
+  KPI3: 'KPI3 Nicht reported, Proof signed',
+  KPI4: 'KPI4 Nicht reported, Proof not uploaded',
+  KPI5: 'KPI5 Dealer Free Stock',
+  KPI6: 'KPI6 Free Stock > 60 Tage',
+};
+const KPI_FIELDS = [
+  ['VIN', 1], ['Vehicle code', 1], ['Vehicle Sales Status', 1], ['Vehicle Logistics Status', 1], ['Model Name', 1],
+  ['Invoice Date', 5], ['Stock Age (Upload)', 2], ['Proof of Handover Status', 1], ['Reported', 7],
+  ...Object.keys(KPI_NAMES).map((k) => [k, 7]), ['Stand', 5],
+];
+
+function kpiLog(msg, kind = '') {
+  const el = $('kpiStatus');
+  el.className = 'status ' + kind;
+  el.textContent = msg;
+}
+
+async function readAll(table) {
+  const out = [];
+  let pageToken;
+  do {
+    const res = await table.getRecordsByPage({ pageSize: 200, pageToken });
+    out.push(...res.records);
+    pageToken = res.hasMore ? res.pageToken : undefined;
+  } while (pageToken);
+  return out;
+}
+
+async function tableByName(name) {
+  const metas = await bitable.base.getTableMetaList();
+  const m = metas.find((t) => t.name.trim() === name);
+  return m ? bitable.base.getTableById(m.id) : null;
+}
+
+async function reportedVins() {
+  const t = await tableByName('BGPC DATA 2.0');
+  if (!t) throw new Error('Tabelle „BGPC DATA 2.0“ nicht gefunden');
+  const f = await t.getFieldMetaList();
+  const vinF = f.find((x) => x.name.trim() === 'VIN');
+  const repF = f.find((x) => x.name.trim() === 'Report Date ONLY SVEN / HANG');
+  if (!vinF || !repF) throw new Error('Feld VIN oder „Report Date ONLY SVEN / HANG“ fehlt in BGPC DATA 2.0');
+  const set = new Set();
+  for (const r of await readAll(t)) {
+    const v = norm(cellText(r.fields[vinF.id]));
+    const rep = r.fields[repF.id];
+    if (v && rep != null && rep !== '' && !(Array.isArray(rep) && !rep.length)) set.add(v);
+  }
+  return set;
+}
+
+function computeKpis(reported) {
+  const c = (l) => XLSX.utils.decode_col(l);
+  const now = new Date();
+  const today = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+  const rows = [];
+  for (const r of state.rawData || []) {
+    const inv = parseDate(r[c(KPI_COLS.invoice)]);
+    const sales = String(r[c(KPI_COLS.sales)] ?? '').trim();
+    if (inv == null || norm(sales).startsWith('HANDED OVER')) continue; // KPI1-Basis
+    const vin = norm(r[c(KPI_COLS.vin)]);
+    if (!vin) continue;
+    const proof = String(r[c(KPI_COLS.proof)] ?? '').trim();
+    const age = Math.round((today - inv) / 86400000);
+    const isRep = reported.has(vin);
+    const free = norm(sales).startsWith('DEALER FREE STOCK');
+    const k = { KPI1: true, KPI2: !isRep };
+    k.KPI3 = k.KPI2 && norm(proof) === 'SIGNED';
+    k.KPI4 = k.KPI2 && norm(proof) === 'NOT UPLOADED';
+    k.KPI5 = free;
+    k.KPI6 = free && age > 60;
+    rows.push({
+      vin, inv, age, isRep, k,
+      text: {
+        'VIN': vin,
+        'Vehicle code': String(r[c(KPI_COLS.code)] ?? '').trim(),
+        'Vehicle Sales Status': sales,
+        'Vehicle Logistics Status': String(r[c(KPI_COLS.logistics)] ?? '').trim(),
+        'Model Name': String(r[c(KPI_COLS.model)] ?? '').trim(),
+        'Proof of Handover Status': proof,
+      },
+    });
+  }
+  const byVin = new Map(rows.map((x) => [x.vin, x]));
+  const counts = {};
+  for (const key of Object.keys(KPI_NAMES)) counts[key] = [...byVin.values()].filter((x) => x.k[key]).length;
+  return { byVin, counts, today };
+}
+
+async function ensureTable(name, fields) {
+  let table = await tableByName(name);
+  if (!table) {
+    const res = await bitable.base.addTable({ name, fields: fields.map(([n, type]) => ({ name: n, type })) });
+    table = await bitable.base.getTableById(res.tableId);
+  }
+  const metas = await table.getFieldMetaList();
+  const ids = new Map(metas.map((f) => [f.name.trim(), f.id]));
+  for (const [n, type] of fields) if (!ids.has(n)) ids.set(n, await table.addField({ name: n, type }));
+  return { table, ids };
+}
+
+async function ensureKpiViews(table, ids) {
+  const views = await table.getViewMetaList();
+  for (const [key, label] of Object.entries(KPI_NAMES)) {
+    if (views.some((v) => v.name === label)) continue;
+    const { viewId } = await table.addView({ name: label, type: 1 });
+    const view = await table.getViewById(viewId);
+    await view.addFilterCondition({ fieldId: ids.get(key), operator: 'is', value: true });
+    await view.applySetting();
+  }
+}
+
+async function buildKpis() {
+  if (!state.rawData) return;
+  try {
+    kpiLog('KPIs werden berechnet …');
+    const reported = await reportedVins();
+    state.kpi = computeKpis(reported);
+    const c = state.kpi.counts;
+    for (const k of Object.keys(KPI_NAMES)) $('k' + k).textContent = c[k];
+    $('kpiBox').hidden = false;
+    $('btnKpi').disabled = false;
+    kpiLog(`${reported.size} reported VINs in BGPC DATA 2.0 gefunden. Zum Speichern „KPIs ins Dashboard schreiben“ klicken.`);
+  } catch (e) {
+    kpiLog('KPI-Berechnung fehlgeschlagen: ' + e.message, 'err');
+  }
+}
+
+async function syncKpis() {
+  const p = state.kpi;
+  if (!p) return;
+  $('btnKpi').disabled = true;
+  try {
+    kpiLog('Tabellen werden vorbereitet …');
+    const { table, ids } = await ensureTable(KPI_TABLE, KPI_FIELDS);
+    const fieldsFor = (x) => {
+      const f = {};
+      for (const [n, v] of Object.entries(x.text)) f[ids.get(n)] = v ? [{ type: 'text', text: v }] : null;
+      f[ids.get('Invoice Date')] = x.inv;
+      f[ids.get('Stock Age (Upload)')] = x.age;
+      f[ids.get('Reported')] = x.isRep;
+      for (const k of Object.keys(KPI_NAMES)) f[ids.get(k)] = !!x.k[k];
+      f[ids.get('Stand')] = p.today;
+      return f;
+    };
+    const existing = await readAll(table);
+    const vinId = ids.get('VIN');
+    const seen = new Set();
+    const upd = [], del = [];
+    for (const r of existing) {
+      const v = norm(cellText(r.fields[vinId]));
+      if (!v || !p.byVin.has(v) || seen.has(v)) { del.push(r.recordId); continue; }
+      seen.add(v);
+      upd.push({ recordId: r.recordId, fields: fieldsFor(p.byVin.get(v)) });
+    }
+    const add = [...p.byVin.values()].filter((x) => !seen.has(x.vin)).map((x) => ({ fields: fieldsFor(x) }));
+    for (let i = 0; i < upd.length; i += 100) await table.setRecords(upd.slice(i, i + 100));
+    for (let i = 0; i < add.length; i += 100) await table.addRecords(add.slice(i, i + 100));
+    for (let i = 0; i < del.length; i += 100) await table.deleteRecords(del.slice(i, i + 100));
+    await ensureKpiViews(table, ids);
+
+    // Verlauf: eine Zeile pro Tag (gleicher Tag wird überschrieben)
+    const histFields = [['Datum', 1], ['Stand', 5], ...Object.keys(KPI_NAMES).map((k) => [k, 2])];
+    const h = await ensureTable(KPI_HIST_TABLE, histFields);
+    const day = new Date(p.today).toISOString().slice(0, 10);
+    const hf = { [h.ids.get('Datum')]: [{ type: 'text', text: day }], [h.ids.get('Stand')]: p.today };
+    for (const k of Object.keys(KPI_NAMES)) hf[h.ids.get(k)] = p.counts[k];
+    const hist = await readAll(h.table);
+    const same = hist.find((r) => cellText(r.fields[h.ids.get('Datum')]) === day);
+    if (same) await h.table.setRecords([{ recordId: same.recordId, fields: hf }]);
+    else await h.table.addRecords([{ fields: hf }]);
+
+    kpiLog(`Fertig: ${add.length} neu, ${upd.length} aktualisiert, ${del.length} entfernt. Verlauf für ${day} gespeichert.`, 'ok');
+  } catch (e) {
+    kpiLog('Abbruch: ' + e.message, 'err');
+  }
+  $('btnKpi').disabled = false;
+}
+
+$('btnKpi').addEventListener('click', syncKpis);
 $('btnStock').addEventListener('click', syncStock);
 $('stockRemove').addEventListener('change', renderStockPlan);
 
