@@ -659,7 +659,8 @@ async function syncPersons() {
 // ---------- Fahrzeug-KPIs (Dashboard-Daten) ----------
 const KPI_TABLE = 'Fahrzeug KPI';
 const KPI_HIST_TABLE = 'Fahrzeug KPI Verlauf';
-const KPI_COLS = { vin: 'B', code: 'A', logistics: 'C', sales: 'G', model: 'AA', invoice: 'AU', proof: 'AZ' };
+const KPI_COLS = { vin: 'B', code: 'A', logistics: 'C', sales: 'G', customer: 'X', model: 'AA', invoice: 'AU', proof: 'AZ' };
+const KPI_EXCLUDE_CUSTOMERS = ['SALGO'];
 const KPI_NAMES = {
   KPI1: 'KPI1 Fakturiert, nicht übergeben',
   KPI2: 'KPI2 Nicht reported',
@@ -722,6 +723,7 @@ function computeKpis(reported) {
     const inv = parseDate(r[c(KPI_COLS.invoice)]);
     const sales = String(r[c(KPI_COLS.sales)] ?? '').trim();
     if (inv == null || norm(sales).startsWith('HANDED OVER')) continue; // KPI1-Basis
+    if (KPI_EXCLUDE_CUSTOMERS.some((x) => norm(r[c(KPI_COLS.customer)]).includes(x))) continue; // z. B. Salgo
     const vin = norm(r[c(KPI_COLS.vin)]);
     if (!vin) continue;
     const proof = String(r[c(KPI_COLS.proof)] ?? '').trim();
