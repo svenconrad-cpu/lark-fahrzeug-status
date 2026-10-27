@@ -786,7 +786,8 @@ async function buildKpis() {
     $('btnKpi').disabled = false;
     kpiLog(`${reported.size} reported VINs in BGPC DATA 2.0 gefunden. Zum Speichern „KPIs ins Dashboard schreiben“ klicken.`);
   } catch (e) {
-    kpiLog('KPI-Berechnung fehlgeschlagen: ' + e.message, 'err');
+    $('kpiBox').hidden = false;
+    kpiLog('KPI-Berechnung fehlgeschlagen: ' + (e && (e.message || e.code || JSON.stringify(e))), 'err');
   }
 }
 
